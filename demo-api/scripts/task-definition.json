@@ -1,0 +1,22 @@
+{
+  "containerDefinitions": [
+    {
+      "name": "demo-api",
+      "image": "<image>",
+      "cpu": 0,
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "demo-api-8090-tcp",
+          "containerPort": 8090,
+          "hostPort": 80,
+          "protocol": "tcp",
+          "appProtocol": "http"
+        }
+      ]
+    }
+  ],
+  "family": "<family>",
+  "cpu": "128",
+  "memory": "33"
+}

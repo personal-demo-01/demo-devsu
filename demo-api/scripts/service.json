@@ -1,0 +1,22 @@
+{
+  "cluster": "<cluster_name>",
+  "serviceName": "<service_name>",
+  "taskDefinition": "<task_definition>",
+  "loadBalancers": [
+    {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-2:594914845356:targetgroup/demo-alb-tg-dev/bad5e55c0fb51d96",
+      "containerName": "demo-api",
+      "containerPort": 8090
+    }
+  ],
+  "desiredCount": 1,
+  "launchType": "EC2",
+  "healthCheckGracePeriodSeconds": 30,
+  "schedulingStrategy": "REPLICA",
+  "deploymentController": {
+    "type": "ECS"
+  },
+  "enableECSManagedTags": true,
+  "propagateTags": "NONE",
+  "enableExecuteCommand": false
+}

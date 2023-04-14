@@ -1,0 +1,69 @@
+name: infrastructure-dev
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-2  
+  AWS_ASSUME_ROLE_ARN: arn:aws:iam::594914845356:role/github-runner-role
+  TF_MODULES_KEY: ${{ secrets.DEMO_TERRAFORM_MOD_KEY }}  # key to get access to sigo-terraform-modules repo
+  ENVIRONMENT: dev
+
+jobs:
+  Deployment:
+    # Add "id-token" with the intended permissions.
+    permissions:
+      id-token: write # This is required for requesting the JWT
+      contents: read # This is required for actions/checkout  
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout
+      uses: actions/checkout@v3
+
+    - name: Configure aws credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        role-to-assume: ${{ env.AWS_ASSUME_ROLE_ARN }}
+        role-session-name: OIDCSession
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+
+    - name: Deploy AWS Resources        
+      run: |
+        echo "*** Setting SSH agent"
+        eval "$(ssh-agent -s)"
+        ssh-add - <<< "$TF_MODULES_KEY"
+
+        echo "*** Deploy ALB"
+        cd alb
+        chmod 770 deploy-alb.sh
+        ./deploy-alb.sh $ENVIRONMENT
+        cd ..
+
+        echo "*** Deploy ECR"
+        cd ecr
+        chmod 770 deploy-ecr.sh
+        ./deploy-ecr.sh $ENVIRONMENT
+        cd ..
+
+        echo "*** Deploy ECS"
+        cd ecs
+        chmod 770 deploy-ecs.sh
+        ./deploy-ecs.sh $ENVIRONMENT
+        cd ..
+
+        echo "*** Deploy network"
+        cd network
+        chmod 770 deploy-network.sh
+        ./deploy-network.sh $ENVIRONMENT
+        cd ..
+
+        echo "*** Deploy rest-api"
+        cd rest-api
+        chmod 770 deploy-rest-api.sh
+        ./deploy-rest-api.sh $ENVIRONMENT
+        cd ..

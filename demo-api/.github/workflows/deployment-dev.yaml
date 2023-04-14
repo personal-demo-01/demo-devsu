@@ -1,0 +1,142 @@
+name: Deployment-DEV
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      task_revision:
+        description: 'Deploy the app by defining the Task Definition Revision'
+        required: true
+        default: '<revision_number>'
+        type: string
+    
+permissions:
+  id-token: write # This is required for requesting the JWT
+  contents: read # This is required for actions/checkout
+
+env:
+  ENVIRONMENT: dev
+  IMAGE: demo-api
+  SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
+  AWS_REGION: us-east-2
+  AWS_ACCOUNT_ID: 594914845356  
+  AWS_ECS_SERVICE_NAME: demo-ecs-service-dev
+  AWS_ALB_NAME: demo-alb-dev
+  AWS_ECS_CLUSTER_NAME: demo-01-ecs-cluster-dev
+  AWS_ECS_TASK_FAMILY: demo-task-def-api
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Run Tests
+        if: ${{ !inputs.task_revision }}
+        run: |-
+          npm install
+          npm run test -- --passWithNoTests
+
+      - name: SonarCloud Scan
+        if: ${{ !inputs.task_revision }}
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needed to get PR information, if any
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  build-publish:
+    name: Build and publish    
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      revision: ${{ steps.print-vars.outputs.revision }}
+    steps:
+      - name: Set environment variables
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-runner-role
+          role-session-name: OIDCSession
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Docker login
+        if: ${{ !inputs.task_revision }}
+        run: aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Build and publish
+        if: ${{ !inputs.task_revision }}
+        run: |-
+          docker build \
+            --build-arg SECRET_TOKEN="$SECRET_TOKEN" \
+            --tag "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE:$ENVIRONMENT-latest" \
+            --tag "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE:$SHORT_SHA" \
+            .
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE --all-tags
+
+      - name: Create task-definition
+        if: ${{ !inputs.task_revision }}
+        id: print-vars
+        env:
+          ECR_IMAGE: ${{env.AWS_ACCOUNT_ID}}.dkr.ecr.${{env.AWS_REGION}}.amazonaws.com/${{env.IMAGE}}:${{env.SHORT_SHA}}
+        run: |-
+          new_task_definition=$(cat scripts/task-definition.json |\
+          jq ".containerDefinitions[0].image=\"$ECR_IMAGE\"" |\
+          jq ".family=\"$AWS_ECS_TASK_FAMILY\"" )
+
+          echo $new_task_definition | xargs -0 aws ecs register-task-definition --cli-input-json
+          revision=$(aws ecs describe-task-definition --task-definition $AWS_ECS_TASK_FAMILY --query 'taskDefinition.revision')
+          echo "revision=$revision" >> $GITHUB_OUTPUT      
+  
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: build-publish
+    env:
+      REVISION: ${{needs.build-publish.outputs.revision}}
+      REVISION_INPUT: ${{ inputs.task_revision }}
+    steps:
+      - name: Set environment variables
+        run: |-
+          if [[ $REVISION_INPUT ]]; then
+            echo "REVISION_DEPLOY=$REVISION_INPUT" >> $GITHUB_ENV
+          else
+            echo "REVISION_DEPLOY=$REVISION" >> $GITHUB_ENV
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-runner-role
+          role-session-name: OIDCSession
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy
+        run: |-
+          echo "*** Check if the service already exists"
+          aws ecs list-services --cluster $AWS_ECS_CLUSTER_NAME | grep $AWS_ECS_SERVICE_NAME && deploy=0 || deploy=1
+          if [[ $deploy -eq 1 ]]; then
+            ./script/deploy-service.sh
+            echo "*** Service deployed"
+          fi
+
+          echo "*** Update service"
+          aws ecs update-service \
+          --service $AWS_ECS_SERVICE_NAME \
+          --cluster $AWS_ECS_CLUSTER_NAME \
+          --task-definition "$AWS_ECS_TASK_FAMILY:$REVISION_DEPLOY"
+
+          revision=$(aws ecs describe-task-definition --task-definition $AWS_ECS_TASK_FAMILY:$REVISION_DEPLOY --query 'taskDefinition.revision')
+          echo "**********************"
+          echo "Revision: $revision"
+          echo "**********************"

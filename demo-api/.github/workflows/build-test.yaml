@@ -1,0 +1,34 @@
+name: Build and Test
+on:
+  push:
+    branches:
+      - main
+      - feature/*
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests      
+        run: npm run test -- --passWithNoTests
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needed to get PR information, if any
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      
+      - name: Build      
+        run: npm run build
